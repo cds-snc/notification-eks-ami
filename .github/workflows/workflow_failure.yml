@@ -1,0 +1,33 @@
+name: Workflow failure
+
+on:
+  workflow_run:
+    workflows:
+      - Build AMI
+    types:
+      - completed
+
+permissions: {}
+
+jobs:
+  on-failure:
+    name: Notify Slack
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.NOTIFY_DEV_SLACK_WEBHOOK }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        shell: bash
+        run: |
+          if [[ -z "$SLACK_WEBHOOK" ]]; then
+            echo "::warning::Set NOTIFY_DEV_SLACK_WEBHOOK to enable build-failure notifications."
+            exit 0
+          fi
+          PAYLOAD=$(jq -n --arg url "$RUN_URL" --arg name "$WORKFLOW_NAME" \
+            '{text: ("EKS AMI workflow failed: <" + $url + "|" + $name + ">")}')
+          curl --fail-with-body --silent --show-error \
+            -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK"

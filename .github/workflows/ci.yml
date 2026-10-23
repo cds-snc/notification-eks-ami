@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint code and workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: nodeadm/go.mod
+          cache-dependency-path: nodeadm/go.sum
+      - name: Install lint tools
+        run: |
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.12.0
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Lint shell scripts
+        run: make lint-code
+      - name: Lint GitHub Actions
+        run: actionlint
+
+  test-ssm-build:
+    name: Test SSM build orchestration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run mocked AWS tests
+        run: bash hack/test-build-ssm.sh
+
+  nodeadm:
+    name: Test and build nodeadm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: nodeadm/go.mod
+          cache-dependency-path: nodeadm/go.sum
+      - name: Check generated files
+        run: hack/nodeadm-check-generate.sh
+      - name: Check vendored dependencies
+        run: hack/nodeadm-check-vendor.sh
+      - name: Test nodeadm
+        run: make -C nodeadm test
+      - name: Build Linux binaries
+        run: make -C nodeadm build
+      - name: Build WebAssembly binary
+        run: make -C nodeadm wasm
+
+  docs:
+    name: Lint documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: nodeadm/go.mod
+          cache-dependency-path: nodeadm/go.sum
+      - name: Lint documentation
+        run: make lint-docs
