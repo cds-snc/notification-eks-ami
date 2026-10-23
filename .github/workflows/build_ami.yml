@@ -1,0 +1,94 @@
+name: Build AMI
+run-name: Build AL2023 EKS ${{ inputs.kubernetes_version }} (${{ inputs.architecture }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      kubernetes_version:
+        description: Kubernetes minor version with published EKS binaries (for example, 1.35)
+        required: true
+        type: string
+      architecture:
+        description: AMI architecture
+        required: true
+        default: x86_64
+        type: choice
+        options:
+          - x86_64
+          - arm64
+
+permissions: {}
+
+concurrency:
+  group: build-ami
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build private AMI with SSM
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    environment: ami-build
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REGION: ca-central-1
+      K8S: ${{ inputs.kubernetes_version }}
+      ARCH: ${{ inputs.architecture }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SUBNET_ID: ${{ vars.SUBNET_ID }}
+      SECURITY_GROUP_ID: ${{ vars.SECURITY_GROUP_ID }}
+      ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      INSTANCE_PROFILE: ${{ vars.INSTANCE_PROFILE }}
+      KMS_KEY_ID: ${{ vars.KMS_KEY_ID }}
+    steps:
+      - name: Validate build configuration
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::AMI builds must run from main."
+            exit 1
+          fi
+          for name in AWS_ROLE_ARN SUBNET_ID SECURITY_GROUP_ID ARTIFACT_BUCKET; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Set the $name variable in the ami-build environment."
+              exit 1
+            fi
+          done
+          if [[ ! "$K8S" =~ ^[0-9]+\.[0-9]+$ ]] || [[ "$ARCH" != x86_64 && "$ARCH" != arm64 ]]; then
+            echo "::error::Provide a Kubernetes minor version and a supported architecture."
+            exit 1
+          fi
+          echo "AMI_NAME=gcnotify-eks-al2023-${K8S}-${ARCH}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-${{ github.run_id }}
+          role-duration-seconds: 21600
+      - name: Build AMI
+        run: bash hack/build-ssm.sh
+      - name: Summarize AMI
+        run: |
+          jq -r '"## AMI build\n\n- AMI: `\(.ami_id)`\n- Region: `\(.region)`\n- Kubernetes: `\(.kubernetes_version)`\n- Source AMI: `\(.source_ami_id)`\n- SSM logs: `\(.logs)`"' \
+            "${AMI_NAME}-manifest.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload build metadata
+        if: ${{ always() && env.AMI_NAME != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ami-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.AMI_NAME }}-manifest.json
+            ${{ env.AMI_NAME }}-version-info.json
+          if-no-files-found: warn
+          retention-days: 30

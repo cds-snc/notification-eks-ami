@@ -44,6 +44,66 @@ make help
 
 The Makefile chooses a particular kubelet binary to use per Kubernetes version which you can [view here](https://github.com/awslabs/amazon-eks-ami/blob/main/Makefile).
 
+## GitHub Actions
+
+The Notify workflows follow the conventions in
+[notification-terraform](https://github.com/cds-snc/notification-terraform) and
+[notification-manifests](https://github.com/cds-snc/notification-manifests):
+SHA-pinned actions, least-privilege permissions, AWS OIDC authentication, and
+Slack build-failure notifications.
+
+- **CI** runs shell/workflow linting, mocked SSM build tests, nodeadm generation,
+  vendor, unit-test and build checks, and documentation linting on pull requests
+  and pushes to `main`. PR checks do not receive AWS credentials.
+- **Check pinned GitHub Actions** uses the shared zizmor check when actions change.
+- **Build AMI** is manual only. Run it from `main`, supplying a Kubernetes minor
+  version with published EKS binaries and either `x86_64` or `arm64`. It calls
+  [the SSM-native builder](https://github.com/cds-snc/notification-eks-ami/blob/main/hack/build-ssm.sh), not Packer, and creates a private,
+  encrypted AL2023 AMI in `ca-central-1`. It does not publish or deploy the AMI.
+  The run summary contains the AMI ID and S3 log location; build metadata is
+  retained as a workflow artifact for 30 days.
+- **Workflow failure** reports failed AMI builds to the optional repository
+  secret `NOTIFY_DEV_SLACK_WEBHOOK`. An unset webhook produces a warning.
+
+### Configure manual builds
+
+Create a GitHub environment named `ami-build`, restrict deployments to `main`,
+and configure required reviewers before enabling builds. Set these environment
+variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_ROLE_ARN` | OIDC role assumed by the build workflow |
+| `SUBNET_ID` | Private builder subnet with outbound repository and SSM access |
+| `SECURITY_GROUP_ID` | Existing builder security group; inbound SSH is not needed |
+| `ARTIFACT_BUCKET` | Existing private S3 bucket in `ca-central-1`, owned by the build account |
+| `INSTANCE_PROFILE` | Optional existing builder instance profile; otherwise the script creates and removes a temporary role/profile |
+| `KMS_KEY_ID` | Optional customer-managed key for builder-volume encryption |
+
+The OIDC role must trust `token.actions.githubusercontent.com` with audience
+`sts.amazonaws.com` and subject
+`repo:cds-snc/notification-eks-ami:environment:ami-build`. Set its maximum session
+duration to at least **six hours** (`21600` seconds); jobs have a five-hour timeout
+to allow the four-hour provisioning limit plus image creation and cleanup.
+Grant the EC2, SSM, S3, IAM/pass-role and optional KMS permissions required by
+[the build script](https://github.com/cds-snc/notification-eks-ami/blob/main/hack/build-ssm.sh). An existing instance profile must allow SSM
+registration, downloading the source archive, and uploading version information
+and command logs to the artifact bucket.
+
+Builds are serialized and new runs do not cancel active builds. Avoid manually
+cancelling a build: the script attempts cleanup on exit, but a forced runner
+termination can leave AWS resources behind. Inspect the builder instance, any
+temporary IAM resources, uploaded source archive, and any AMI/snapshots mentioned
+in the logs after an interrupted or failed run. Successful AMIs, snapshots,
+version information and SSM logs are retained; configure S3 lifecycle rules and
+an AMI retention policy separately.
+
+The AWS-upstream workflows and their local actions have been removed, including
+scheduled AWS builds, janitors, dependency/ENI updates, bot commands, CodeCommit
+synchronization, changelog automation, and GitHub Pages publishing. Nodeadm
+container-based end-to-end tests remain available locally via
+`make -C nodeadm test-e2e`; they are not part of the replacement CI.
+
 > **Note**
 > The default instance type to build this AMI does not qualify for the AWS free tier.
 > You are charged for any instances created when building this AMI.

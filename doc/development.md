@@ -23,7 +23,8 @@ As an optimization, the default values for all known instance types are cached i
 instance type is not found in this cached file, the `ec2:DescribeInstanceTypes` API is used to calculate
 the value at runtime.
 
-The resource file is generated once per day by a GitHub Action workflow.
+The Notify fork does not schedule automatic resource-file updates. Regenerate
+and commit the resource file when refreshing the supported instance types.
 
 To generate the resource file:
 ```
